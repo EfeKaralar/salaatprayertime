@@ -1,0 +1,29 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "mezo122us2003@hotmail.com",
+                "Name": "Mazen",
+                "Name[ar]": "مازن"
+            }
+        ],
+        "BugReportUrl": "https://github.com/mazenmohamed203/salaatprayertime/issues",
+        "Category": "Date and Time",
+        "Description": "Prayer times clock and Hijri date on your desktop",
+        "Description[ar]": "ساعة الصلاة على مكتبك",
+        "EnabledByDefault": true,
+        "FormFactors": [
+            "tablet",
+            "handset",
+            "desktop"
+        ],
+        "Icon": "accessories-clock",
+        "Id": "com.github.mazen.salatprayertime",
+        "License": "GPL-3.0+",
+        "Name": "Salaat Prayer Time",
+        "Name[ar]": "ساعة الصلاة",
+        "Website": "https://github.com/mazenmohamed203/salaatprayertime"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
