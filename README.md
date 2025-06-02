@@ -16,7 +16,6 @@ Calculations are based on the [AlAdhan API](https://aladhan.com/prayer-times-api
 * Offline caching for the current month.
 * English and Arabic language support.
 * 12/24 hour format & prayer notifications.
-* Selectable UI themes for the popup.
 
 ## Installation
 *Just download from kde store or clone this repository.
