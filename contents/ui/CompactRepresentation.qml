@@ -1,65 +1,232 @@
 
-import QtQuick 2.15
-import QtQuick.Layouts 1.15
-import org.kde.plasma.plasmoid 2.0
-import org.kde.plasma.components 3.0 as PlasmaComponents
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import org.kde.plasma.plasmoid
+import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.core as PlasmaCore
-import org.kde.kirigami 2.20 as Kirigami
+import org.kde.kirigami as Kirigami
 
 Item {
     id: root
-    implicitWidth: Kirigami.Units.gridUnit * 5
 
-    // --- Properties ---
+    implicitWidth: (compactStyle === 1) ? Kirigami.Units.gridUnit * 7 :
+    (compactStyle === 3) ? Kirigami.Units.gridUnit * 9 :
+    Kirigami.Units.gridUnit * 7
+
+    // --- Properties passed from main.qml ---
     property var prayerTimesData: ({})
     property PlasmoidItem plasmoidItem
+    property string nextPrayerName: ""
+    property string nextPrayerTime: ""
+    property string countdownText: ""
+    property int compactStyle: 0 // 0: Normal, 1: Countdown, 2: Toggle, 3: Horizontal
+
+    // --- Properties for language and format ---
     property int languageIndex: 0
     property bool hourFormat: false
-    property bool prePrayerWarningActive: false
 
-    property color defaultBackgroundColor: "transparent"
-    property color warningBackgroundColor: Qt.rgba(Kirigami.Theme.highlightColor.r,
-                                                   Kirigami.Theme.highlightColor.g,
-                                                   Kirigami.Theme.highlightColor.b,
-                                                   0.25)
-
+    // --- Internal Properties ---
+    property bool isPrePrayerAlertActive: false
+    property bool toggleViewIsPrayerTime: true
     readonly property int maxCompactLabelPixelSize: Kirigami.Theme.defaultFont.pixelSize
-    readonly property int minCompactLabelPixelSize: 8
+    readonly property int minCompactLabelPixelSize: 7
 
-    // --- Explicitly control animation and color reset ---
-    onPrePrayerWarningActiveChanged: {
-        if (prePrayerWarningActive) {
-            alertBackground.color = warningBackgroundColor;
-            flashAnimation.start();
-        } else {
-            flashAnimation.stop();
-            alertBackground.color = defaultBackgroundColor;
+    // --- Helper function to get localized text ---
+    function getRemainingText() {
+        return (languageIndex === 1) ? "متبقي" : i18n("After");
+    }
+
+    function getTimeLeftText() {
+        return (languageIndex === 1) ? "الوقت المتبقي:" : i18n("Time Left:");
+    }
+
+    // --- Helper function to parse time string to Date object ---
+    function parseTimeToDate(timeString) {
+        if (!timeString || timeString === "--:--") return null;
+
+        // Handle both 12-hour and 24-hour formats
+        let cleanTime = timeString.replace(/\s*(AM|PM|am|pm)\s*/g, '');
+        let parts = cleanTime.split(':');
+        if (parts.length < 2) return null;
+
+        let hours = parseInt(parts[0], 10);
+        let minutes = parseInt(parts[1], 10);
+
+        // Handle 12-hour format conversion
+        if (timeString.toLowerCase().includes('pm') && hours !== 12) {
+            hours += 12;
+        } else if (timeString.toLowerCase().includes('am') && hours === 12) {
+            hours = 0;
+        }
+
+        let dateObj = new Date();
+        dateObj.setHours(hours);
+        dateObj.setMinutes(minutes);
+        dateObj.setSeconds(0);
+        dateObj.setMilliseconds(0);
+
+        return dateObj;
+    }
+
+    // --- Timer for 5-minute pre-prayer alert ---
+    Timer {
+        id: prePrayerAlertTimer
+        interval: 1000 // Check every second
+        running: true
+        repeat: true
+        onTriggered: {
+            // Only check if we have valid prayer data
+            if (!nextPrayerName || !nextPrayerTime || nextPrayerTime === "--:--") {
+                root.isPrePrayerAlertActive = false;
+                return;
+            }
+
+            let prayerTimeObj = parseTimeToDate(nextPrayerTime);
+            if (!prayerTimeObj) {
+                root.isPrePrayerAlertActive = false;
+                return;
+            }
+
+            let now = new Date();
+
+            // Handle Fajr prayer spanning midnight
+            if (nextPrayerName === "Fajr" && prayerTimeObj < now) {
+                prayerTimeObj.setDate(prayerTimeObj.getDate() + 1);
+            }
+
+            // Calculate time difference in milliseconds
+            let timeDiff = prayerTimeObj.getTime() - now.getTime();
+
+            // 5 minutes = 5 * 60 * 1000 = 300,000 milliseconds
+            let fiveMinutesInMs = 5 * 60 * 1000;
+
+            // Activate alert if between 5 minutes and 0 minutes before prayer
+            let newAlertState = (timeDiff > 0 && timeDiff <= fiveMinutesInMs);
+
+            // If alert state changed from active to inactive, explicitly reset background
+            if (root.isPrePrayerAlertActive && !newAlertState) {
+                alertBackground.color = "transparent";
+                gradientBackground.opacity = 0.0;
+            }
+
+            root.isPrePrayerAlertActive = newAlertState;
         }
     }
 
-    // --- Background Rectangle for Animation ---
+    // --- Timers for Toggle Mode ---
+    Timer {
+        id: toggleTimer
+        interval: 18000
+        running: root.compactStyle === 2
+        repeat: true
+        onTriggered: {
+            root.toggleViewIsPrayerTime = false;
+            toggleReturnTimer.start();
+        }
+    }
+
+    Timer {
+        id: toggleReturnTimer
+        interval: 8000
+        repeat: false
+        onTriggered: {
+            root.toggleViewIsPrayerTime = true;
+        }
+    }
+
+    // --- Background with subtle pulsing yellow alert ---
     Rectangle {
         id: alertBackground
         anchors.fill: parent
-        color: root.defaultBackgroundColor
-        radius: Kirigami.Theme.smallRadius
+        color: "transparent"
+        radius: 4
 
-        SequentialAnimation {
-            id: flashAnimation
-            // target: alertBackground // Not needed here, target is on ColorAnimation
-            // property: "color"    // <<<< THIS LINE WAS THE ERROR AND IS REMOVED
+        // Subtle pulsing yellow animation when alert is active
+        SequentialAnimation on color {
+            id: subtleFlashAnimation
             loops: Animation.Infinite
-            running: false
+            running: root.isPrePrayerAlertActive
 
-            ColorAnimation { target: alertBackground; property: "color"; to: root.defaultBackgroundColor; duration: 750 }
-            ColorAnimation { target: alertBackground; property: "color"; to: root.warningBackgroundColor; duration: 750 }
+            // FIXED: Add proper cleanup when animation stops
+            onRunningChanged: {
+                if (!running) {
+                    alertBackground.color = "transparent";
+                }
+            }
+
+            ColorAnimation {
+                from: "transparent"
+                to: Qt.rgba(1.0, 0.84, 0.0, 0.15) // Soft yellow with 15% opacity
+                duration: 2000 // Slower transition for subtlety
+                easing.type: Easing.InOutSine // Smoother easing
+            }
+            ColorAnimation {
+                from: Qt.rgba(1.0, 0.84, 0.0, 0.15)
+                to: "transparent"
+                duration: 2000
+                easing.type: Easing.InOutSine
+            }
+        }
+
+        // Very subtle border that appears during alert
+        border.width: root.isPrePrayerAlertActive ? 1 : 0
+        border.color: Qt.rgba(1.0, 0.84, 0.0, 0.3) // Slightly more visible border
+
+        // Add a subtle shadow effect during alert
+        Rectangle {
+            id: shadowEffect
+            anchors.fill: parent
+            color: "transparent"
+            radius: parent.radius
+            border.width: root.isPrePrayerAlertActive ? 1 : 0
+            border.color: Qt.rgba(1.0, 0.84, 0.0, 0.08) // Very subtle outer glow
+            anchors.margins: -1
+            z: -1
         }
     }
 
-    // --- Signal Handlers to Update Display ---
-    onLanguageIndexChanged: updateDisplay()
-    onHourFormatChanged: updateDisplay()
-    onPrayerTimesDataChanged: updateDisplay()
+    // --- Alternative gradient background for even more subtlety ---
+    Rectangle {
+        id: gradientBackground
+        anchors.fill: parent
+        color: "transparent"
+        radius: 4
+        visible: root.isPrePrayerAlertActive
+        opacity: 0.0
+
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.rgba(1.0, 0.84, 0.0, 0.05) }
+            GradientStop { position: 0.5; color: Qt.rgba(1.0, 0.84, 0.0, 0.12) }
+            GradientStop { position: 1.0; color: Qt.rgba(1.0, 0.84, 0.0, 0.05) }
+        }
+
+        // Gentle breathing animation for the gradient
+        SequentialAnimation on opacity {
+            loops: Animation.Infinite
+            running: root.isPrePrayerAlertActive
+
+            // FIXED: Add proper cleanup when animation stops
+            onRunningChanged: {
+                if (!running) {
+                    gradientBackground.opacity = 0.0;
+                }
+            }
+
+            NumberAnimation {
+                from: 0.0
+                to: 1.0
+                duration: 3000
+                easing.type: Easing.InOutQuad
+            }
+            NumberAnimation {
+                from: 1.0
+                to: 0.0
+                duration: 3000
+                easing.type: Easing.InOutQuad
+            }
+        }
+    }
 
     // --- MouseArea ---
     MouseArea {
@@ -67,6 +234,7 @@ Item {
         property bool wasExpanded: false
         anchors.fill: parent
         hoverEnabled: true
+
         onPressed: wasExpanded = root.plasmoidItem ? root.plasmoidItem.expanded : false
         onClicked: mouse => {
             if (root.plasmoidItem) {
@@ -75,138 +243,120 @@ Item {
         }
     }
 
-    // --- Label ---
-    PlasmaComponents.Label {
-        id: nextPrayerLabel
+    // --- Layouts ---
+    StackLayout {
+        id: layoutSwitcher
         anchors.fill: parent
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-        wrapMode: Text.WordWrap
-
-        font.pixelSize: {
-            let calculatedSize = Math.floor(root.height / 2.5);
-            return Math.max(root.minCompactLabelPixelSize, Math.min(calculatedSize, root.maxCompactLabelPixelSize));
-        }
-        // Text will be set by updateDisplay()
-    }
-
-    // --- Logic Functions ---
-    function getPrayerName(langIndex, prayerKey) {
-        if (langIndex === 0) { return prayerKey; }
-        else {
-            const arabicPrayers = { "Fajr": "الفجر", "Sunrise": "الشروق", "Dhuhr": "الظهر", "Asr": "العصر", "Maghrib": "المغرب", "Isha": "العشاء"};
-            return arabicPrayers[prayerKey] || prayerKey;
-        }
-    }
-
-    function to12HourTime(timeString24, use12HourFormat) {
-        if (!timeString24 || timeString24 === "--:--") return "\u202A--:--\u202C";
-        const LRE = "\u202A"; const PDF = "\u202C"; const NBSP = "\u00A0";
-        if (use12HourFormat) {
-            let parts = timeString24.split(':');
-            let hours = parseInt(parts[0], 10);
-            let minutes = parseInt(parts[1], 10);
-            if(isNaN(hours) || isNaN(minutes)) return "\u202A--:--\u202C";
-            let period = hours >= 12 ? i18n("PM") : i18n("AM");
-            hours = hours % 12 || 12;
-            let timePart = `${hours}:${String(minutes).padStart(2, '0')}`;
-            return `${LRE}${timePart}${NBSP}${period}${PDF}`;
-        } else {
-            return `${LRE}${timeString24}${PDF}`;
-        }
-    }
-
-    function parseTime(timeString) {
-        if (!timeString || timeString === "--:--") return null;
-        let parts = timeString.split(':');
-        if (parts.length !== 2) return null;
-        let hours = parseInt(parts[0], 10);
-        let minutes = parseInt(parts[1], 10);
-        if (isNaN(hours) || isNaN(minutes)) return null;
-
-        let dateObj = new Date();
-        dateObj.setHours(hours);
-        dateObj.setMinutes(minutes);
-        dateObj.setSeconds(0);
-        dateObj.setMilliseconds(0);
-        return dateObj;
-    }
-
-    function getNextPrayerData() {
-        const prayerData = root.prayerTimesData;
-        if (!prayerData || Object.keys(prayerData).length === 0 || !prayerData.Fajr || prayerData.Fajr === "--:--") {
-            return { nameText: i18n("Loading..."), timeText: "", nextPrayerDate: null };
+        anchors.margins: 2 // Small margin to prevent clipping of border
+        currentIndex: {
+            if (root.compactStyle === 1) return 1; // Countdown view
+            if (root.compactStyle === 3) return 2; // Horizontal view
+            return 0; // Normal & Toggle view
         }
 
-        const prayerKeys = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
-        const now = new Date();
-        const currentTimeStr = ("0" + now.getHours()).slice(-2) + ":" + ("0" + now.getMinutes()).slice(-2);
+        // Item 0: Normal & Toggle View
+        Label {
+            id: normalAndToggleLabel
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            font.pointSize: Kirigami.Theme.defaultFont.pointSize
+            fontSizeMode: Text.Fit
 
-        let nextPrayerKey = "";
-        let nextPrayerRawTime = "";
-        let nextPrayerDateObj = null;
+            // More subtle text enhancement during alert
+            color: root.isPrePrayerAlertActive ?
+            Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.9) :
+            Kirigami.Theme.textColor
+            font.weight: root.isPrePrayerAlertActive ? Font.Medium : Font.Normal
 
-        for (const key of prayerKeys) {
-            if (prayerData[key] && prayerData[key] !== "--:--" && prayerData[key] > currentTimeStr) {
-                nextPrayerKey = key;
-                nextPrayerRawTime = prayerData[key];
-                break;
-            }
-        }
-
-        if (nextPrayerKey === "" && prayerData["Fajr"] && prayerData["Fajr"] !== "--:--") {
-            nextPrayerKey = "Fajr";
-            nextPrayerRawTime = prayerData["Fajr"];
-            let fajrTimeToday = parseTime(nextPrayerRawTime);
-            if (fajrTimeToday) {
-                nextPrayerDateObj = new Date(fajrTimeToday.getTime());
-                if (now > fajrTimeToday) {
-                    nextPrayerDateObj.setDate(nextPrayerDateObj.getDate() + 1);
+            text: {
+                if (root.compactStyle === 2 && !root.toggleViewIsPrayerTime) {
+                    return getTimeLeftText() + "\n" + root.countdownText.substring(0, 5);
+                } else {
+                    return root.nextPrayerName + "\n" + root.nextPrayerTime;
                 }
             }
-        } else if (nextPrayerRawTime) {
-            nextPrayerDateObj = parseTime(nextPrayerRawTime);
         }
 
-        if (!nextPrayerKey || !nextPrayerDateObj) {
-            return { nameText: i18n("N/A"), timeText: "", nextPrayerDate: null };
+        // Item 1: Countdown View (side-by-side)
+        RowLayout {
+            id: countdownView
+            spacing: Kirigami.Units.largeSpacing
+            anchors.centerIn: parent
+
+            Label {
+                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                horizontalAlignment: Text.AlignHCenter
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize - 1
+                color: root.isPrePrayerAlertActive ?
+                Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.9) :
+                Kirigami.Theme.textColor
+                font.weight: root.isPrePrayerAlertActive ? Font.Medium : Font.Normal
+                text: root.nextPrayerName + "\n" + root.nextPrayerTime
+            }
+
+            Rectangle {
+                width: 1
+                Layout.fillHeight: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                Layout.bottomMargin: Kirigami.Units.smallSpacing
+                color: root.isPrePrayerAlertActive ?
+                Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.9) :
+                Kirigami.Theme.textColor
+                opacity: 0.4
+            }
+
+            Label {
+                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                horizontalAlignment: Text.AlignHCenter
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize - 1
+                color: root.isPrePrayerAlertActive ?
+                Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.9) :
+                Kirigami.Theme.textColor
+                font.weight: root.isPrePrayerAlertActive ? Font.Medium : Font.Normal
+                text: getRemainingText() + "\n" + root.countdownText.substring(0, 5);
+            }
         }
 
-        let translatedName = getPrayerName(root.languageIndex, nextPrayerKey);
-        let formattedTime = to12HourTime(nextPrayerRawTime, root.hourFormat);
+        // Item 2: NEW - Horizontal View (prayer name next to time)
+        RowLayout {
+            id: horizontalView
+            spacing: Kirigami.Units.smallSpacing
+            anchors.centerIn: parent
 
-        return {
-            nameText: translatedName,
-            timeText: formattedTime,
-            nextPrayerDate: nextPrayerDateObj
-        };
-    }
+            Label {
+                Layout.alignment: Qt.AlignVCenter
+                horizontalAlignment: Text.AlignRight
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize
+                color: root.isPrePrayerAlertActive ?
+                Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.9) :
+                Kirigami.Theme.textColor
+                font.weight: root.isPrePrayerAlertActive ? Font.Medium : Font.Normal
+                text: root.nextPrayerName
+            }
 
-    function updateDisplay() {
-        let data = getNextPrayerData();
-        nextPrayerLabel.text = data.nameText + "\n" + data.timeText;
-
-        if (data.nextPrayerDate) {
-            const nowMs = new Date().getTime();
-            const prayerMs = data.nextPrayerDate.getTime();
-            const diffMs = prayerMs - nowMs;
-            const fiveMinutesInMs = 5 * 60 * 1000;
-
-            root.prePrayerWarningActive = (diffMs > 0 && diffMs <= fiveMinutesInMs);
-        } else {
-            root.prePrayerWarningActive = false;
+            Label {
+                Layout.alignment: Qt.AlignVCenter
+                horizontalAlignment: Text.AlignLeft
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize
+                color: root.isPrePrayerAlertActive ?
+                Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.9) :
+                Kirigami.Theme.textColor
+                font.weight: root.isPrePrayerAlertActive ? Font.Medium : Font.Normal
+                text: root.nextPrayerTime
+            }
         }
     }
 
-    // --- Timer & Initial Setup ---
-    Timer {
-        interval: 1000
-        running: true
-        repeat: true
-        onTriggered: updateDisplay()
-    }
-
-    Component.onCompleted: {
-        updateDisplay();
+    // --- Subtle tooltip ---
+    ToolTip {
+        id: debugTooltip
+        visible: mouseArea.containsMouse && root.isPrePrayerAlertActive
+        text: {
+            if (root.languageIndex === 1) {
+                return "تنبيه: باقي 5 دقائق على " + root.nextPrayerName;
+            } else {
+                return "Alert: " + root.nextPrayerName + " in 5 minutes";
+            }
+        }
     }
 }
