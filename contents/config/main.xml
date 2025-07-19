@@ -2,24 +2,32 @@
 <kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
       xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
-  <kcfgfile name=""/> <group name="General">
+  <kcfgfile name=""/>
+  <group name="General">
     <entry name="city" type="String">
-      <default>Makkah</default> </entry>
+      <default>Makkah</default>
+    </entry>
     <entry name="country" type="String">
       <default>Saudi Arabia</default>
     </entry>
     <entry name="hourFormat" type="Bool">
-      <default>false</default> </entry>
+      <default>false</default>
+    </entry>
     <entry name="notifications" type="Bool">
       <default>true</default>
     </entry>
     <entry name="languageIndex" type="Int">
-      <default>0</default> </entry>
+      <default>0</default>
+    </entry>
     <entry name="school" type="Int">
-      <default>0</default> </entry>
+      <default>0</default>
+    </entry>
     <entry name="method" type="Int">
-      <default>4</default> </entry>
-
+      <default>4</default>
+    </entry>
+    <entry name="compactStyle" type="Int">
+      <default>0</default>
+    </entry>
     <entry name="hijriOffset" type="Int">
       <default>0</default>
     </entry>
@@ -41,16 +49,42 @@
     <entry name="ishaOffsetMinutes" type="Int">
       <default>0</default>
     </entry>
-
+    <!-- New Adhan Audio Settings -->
+    <entry name="adhanAudioPath" type="String">
+      <default></default>
+    </entry>
+    <entry name="adhanPlaybackMode" type="Int">
+      <default>0</default> <!-- 0: Off, 1: Full, 2: 15 seconds -->
+    </entry>
+    <entry name="adhanVolume" type="Double">
+      <default>0.7</default>
+    </entry>
+    <entry name="playAdhanForFajr" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="playAdhanForDhuhr" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="playAdhanForAsr" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="playAdhanForMaghrib" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="playAdhanForIsha" type="Bool">
+      <default>true</default>
+    </entry>
   </group>
-
   <group name="About">
     <entry name="author" type="String">
-      <default>Mazen</default> </entry>
+      <default>Mazen</default>
+    </entry>
     <entry name="email" type="String">
-      <default>mezo122us2003@hotmail.com</default> </entry>
+      <default>mezo122us2003@hotmail.com</default>
+    </entry>
     <entry name="version" type="String">
-      <default>1.0.0</default> </entry>
+      <default>1.0.0</default>
+    </entry>
     <entry name="citations" type="String">
       <default>Prayer times from AlAdhan API. Inspired by Prayer Times Widget.</default>
     </entry>
