@@ -1,29 +1,28 @@
-// main.qml (Cleaned and Optimized)
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
-import org.kde.kirigami 2.20 as Kirigami
-import org.kde.plasma.components 3.0 as PlasmaComponents
-import org.kde.plasma.plasmoid 2.0
-import org.kde.notification 1.0
-import QtQuick.LocalStorage 2.15 as LocalStorage
+
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+import org.kde.plasma.components as PlasmaComponents
+import org.kde.plasma.plasmoid
+import org.kde.notification
+import QtQuick.LocalStorage as LocalStorage
+import QtMultimedia
 
 PlasmoidItem {
     id: root
 
-    // Layout hints for the panel
-    Layout.minimumWidth: Kirigami.Units.gridUnit * 5
-    Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+    Layout.minimumWidth: Kirigami.Units.gridUnit * 7
+    Layout.preferredWidth: Kirigami.Units.gridUnit * 7
+    // --- Properties ---
+    property var times: ({})
+    property var displayPrayerTimes: ({})
+    property string hijriDateDisplay: "..."
+    property var rawHijriDataFromApi: null
 
-    // --- Data Properties ---
-    property var times: ({})                 // Raw prayer times from API/Cache
-    property var displayPrayerTimes: ({})    // Offset-adjusted times for UI
-    property string hijriDateDisplay: "..."   // Formatted Hijri date string for UI
-    property var rawHijriDataFromApi: null   // Raw Hijri object from API, used for offset calculation & caching
-
-    // Processed Hijri components for special date logic
+    // For special Islamic date logic
     property int currentHijriDay: 0
-    property int currentHijriMonth: 0        // Numeric month (1-12)
+    property int currentHijriMonth: 0
     property int currentHijriYear: 0
     property string specialIslamicDateMessage: ""
 
@@ -33,165 +32,359 @@ PlasmoidItem {
 
     // Configuration dependent properties
     property bool isSmall: width < (Kirigami.Units.gridUnit * 10) || height < (Kirigami.Units.gridUnit * 10)
-    property int languageIndex: Plasmoid.configuration.languageIndex || 0 // Default to 0 if undefined
+    property int languageIndex: Plasmoid.configuration.languageIndex !== undefined ? Plasmoid.configuration.languageIndex : 0
 
+
+
+    // Add these new properties for audio functionality
+    property string adhanAudioPath: {
+        let customPath = Plasmoid.configuration.adhanAudioPath || ""
+        if (customPath === "") {
+            return defaultAdhanPath
+        }
+        return customPath
+    }
+    property int adhanPlaybackMode: Plasmoid.configuration.adhanPlaybackMode || 0
+    property real adhanVolume: Plasmoid.configuration.adhanVolume || 0.7
+    property bool playAdhanForFajr: Plasmoid.configuration.playAdhanForFajr !== undefined ? Plasmoid.configuration.playAdhanForFajr : true
+    property bool playAdhanForDhuhr: Plasmoid.configuration.playAdhanForDhuhr !== undefined ? Plasmoid.configuration.playAdhanForDhuhr : true
+    property bool playAdhanForAsr: Plasmoid.configuration.playAdhanForAsr !== undefined ? Plasmoid.configuration.playAdhanForAsr : true
+    property bool playAdhanForMaghrib: Plasmoid.configuration.playAdhanForMaghrib !== undefined ? Plasmoid.configuration.playAdhanForMaghrib : true
+    property bool playAdhanForIsha: Plasmoid.configuration.playAdhanForIsha !== undefined ? Plasmoid.configuration.playAdhanForIsha : true
+    property bool useCoordinates: Plasmoid.configuration.useCoordinates || false
+    property string latitude: Plasmoid.configuration.latitude || ""
+    property string longitude: Plasmoid.configuration.longitude || ""
+
+
+    property string defaultAdhanPath: {
+        // Get the widget's root directory
+        let widgetRootUrl = Qt.resolvedUrl("./").toString()
+
+        // Construct the path to the audio file
+        let audioFileUrl = widgetRootUrl + "contents/audio/Adhan.mp3"
+
+        console.log("Widget root URL:", widgetRootUrl)
+        console.log("Audio file URL:", audioFileUrl)
+
+        return audioFileUrl
+    }
+
+    // --- NEW Properties for Countdown Timer ---
+    property var nextPrayerDateTime: null // Will hold the full Date object for the next prayer
+    property string timeUntilNextPrayer: ""   // Will hold the formatted countdown string "HH:MM:SS"
+    property string nextPrayerNameForDisplay: ""
+    property string nextPrayerTimeForDisplay: ""
     // --- Timers and Components ---
     Component { id: notificationComponent; Notification { componentName: "plasma_workspace"; eventId: "notification"; autoDelete: true } }
 
-    Timer { // Startup delay timer for initial fetch
+    Timer { // Startup delay timer
         id: startupTimer
-        interval: 500 // 0.5 second delay
+        interval: 500
         repeat: false
         onTriggered: root.fetchTimes()
     }
 
-    Timer { // Main refresh timer (e.g., for daily data integrity check, active prayer update)
-        interval: 30000 // 30 seconds
-        running: true
-        repeat: true
+    Timer { // Main 30-second refresh timer
+        interval: 30000; running: true; repeat: true;
         onTriggered: {
-            if (root.displayPrayerTimes.apiGregorianDate && getFormattedDate(new Date()) === root.displayPrayerTimes.apiGregorianDate) {
-                if (Object.keys(root.displayPrayerTimes).length > 0 && root.displayPrayerTimes.Fajr !== "--:--") {
+            if (root.times && Object.keys(root.times).length > 0 && root.displayPrayerTimes.apiGregorianDate && getFormattedDate(new Date()) === root.displayPrayerTimes.apiGregorianDate) {
+                if (Object.keys(root.displayPrayerTimes).length > 0) {
                     root.highlightActivePrayer(root.displayPrayerTimes);
-                } else if (Object.keys(root.times).length > 0 && root.times.Fajr) { // Raw times available but display not processed
+                } else if (Object.keys(root.times).length > 0) {
                     processRawTimesAndApplyOffsets();
                 }
-            } else { // Date has changed or no valid data, fetch new times
+            } else {
                 root.fetchTimes();
             }
         }
     }
 
-    // --- Helper Functions ---
-    function getDatabase() {
-        return LocalStorage.LocalStorage.openDatabaseSync("PrayerTimesCacheDB", "1.0", "Prayer Times Offline Cache", 200000);
-    }
+    //  Timer for the countdown display
+    Timer {
+        interval: 1000 // Run every second
+        running: root.nextPrayerDateTime !== null && root.nextPrayerDateTime > new Date()
+        repeat: true
+        onTriggered: {
+            if (root.nextPrayerDateTime) {
+                let now = new Date();
+                let diffMs = root.nextPrayerDateTime.getTime() - now.getTime();
 
-    function initDatabase() {
-        var db = getDatabase();
-        db.transaction(function(tx) {
-            tx.executeSql('CREATE TABLE IF NOT EXISTS PrayerDataCache(gregorianDate TEXT PRIMARY KEY, timingsJSON TEXT, hijriJSON TEXT)');
-            // console.log("Prayer Times Widget: Database table ensured."); // Optional: keep for first-run debug
-        });
-    }
+                if (diffMs < 0) { // Time has passed
+                    root.timeUntilNextPrayer = i18n("Prayer time!");
+                    root.fetchTimes(); // Re-fetch to find the next prayer after this one
+                    return;
+                }
+                let totalMinutes = Math.floor(diffMs / (1000 * 60));
+                let hours = Math.floor(totalMinutes / 60);
+                let minutes = totalMinutes % 60;
 
-    function to12HourTime(timeString, use12HourFormat) {
-        if (!timeString || timeString === "--:--") return timeString;
-        if (use12HourFormat) {
-            let parts = timeString.split(':');
-            let hours = parseInt(parts[0], 10);
-            let minutes = parseInt(parts[1], 10);
-            if (isNaN(hours) || isNaN(minutes)) return timeString; // Should not happen if timeString is valid HH:MM
-
-            let period = hours >= 12 ? i18n("PM") : i18n("AM");
-            hours = hours % 12 || 12;
-            return `${hours}:${String(minutes).padStart(2, '0')} ${period}`;
+                root.timeUntilNextPrayer = String(hours).padStart(2, '0') + ":" +
+                String(minutes).padStart(2, '0');
+            }
         }
-        return timeString;
     }
 
-    function parseTime(timeString) {
-        if (!timeString || timeString === "--:--") return new Date(0); // Return epoch if invalid
-        let parts = timeString.split(':');
-        let dateObj = new Date();
-        dateObj.setHours(parseInt(parts[0], 10));
-        dateObj.setMinutes(parseInt(parts[1], 10));
-        dateObj.setSeconds(0);
-        dateObj.setMilliseconds(0);
-        return dateObj;
+    MediaPlayer {
+        id: adhanPlayer
+        audioOutput: adhanAudioOutput // Link player to the output
+
+        onPlaybackStateChanged: {
+            // This now handles the stopped state
+            if (playbackState === MediaPlayer.StoppedState) {
+                console.log("Adhan playback stopped")
+                // Ensure the 15-second timer is also stopped
+                adhanStopTimer.stop()
+            }
+        }
+
+        onErrorOccurred: {
+            console.log("Adhan playback error:", error, errorString)
+        }
     }
 
-    function getPrayerName(langIndex, prayerKey) {
-        if (langIndex === 0) { return prayerKey; }
-        const arabicPrayers = { "Fajr": "الفجر", "Sunrise": "الشروق", "Dhuhr": "الظهر", "Asr": "العصر", "Maghrib": "المغرب", "Isha": "العشاء" };
-        return arabicPrayers[prayerKey] || prayerKey; // Fallback to key if translation missing
+    AudioOutput {
+        id: adhanAudioOutput
+        volume: root.adhanVolume // Volume is controlled here
     }
 
-    function highlightActivePrayer(currentTimings) {
-        if (!currentTimings || !currentTimings.Fajr || currentTimings.Fajr === "--:--") {
-            root.activePrayer = ""; // No valid times to determine active prayer
+
+    Timer {
+        id: adhanStopTimer
+        interval: 40000
+        repeat: false
+        onTriggered: {
+
+            if (adhanPlayer.playbackState === MediaPlayer.PlayingState) {
+                adhanPlayer.stop()
+                console.log("Adhan stopped after 40 seconds")
+            }
+        }
+    }
+
+
+
+
+    // --- Helper Functions ---
+    function getDatabase() { return LocalStorage.LocalStorage.openDatabaseSync("PrayerTimesCacheDB", "1.0", "Prayer Times Offline Cache", 200000); }
+    function initDatabase() { var db = getDatabase(); db.transaction(function(tx) { tx.executeSql('CREATE TABLE IF NOT EXISTS PrayerDataCache(gregorianDate TEXT PRIMARY KEY, timingsJSON TEXT, hijriJSON TEXT)'); console.log("Prayer Times Widget: Database table ensured."); });}
+    function to12HourTime(timeString, isActive) { if (!timeString || timeString === "--:--") return timeString; if (isActive) { let parts = timeString.split(':'); let hours = parseInt(parts[0], 10); let minutes = parseInt(parts[1], 10); let period = hours >= 12 ? i18n("PM") : i18n("AM"); hours = hours % 12 || 12; return `${hours}:${String(minutes).padStart(2, '0')} ${period}`; } else { return timeString; } }
+    function parseTime(timeString) { if (!timeString || timeString === "--:--") return new Date(0); let parts = timeString.split(':'); let dateObj = new Date(); dateObj.setHours(parseInt(parts[0], 10)); dateObj.setMinutes(parseInt(parts[1], 10)); dateObj.setSeconds(0); dateObj.setMilliseconds(0); return dateObj; }
+    function getPrayerName(langIndex, prayerKey) { if (langIndex === 0) { return prayerKey; } else { const arabicPrayers = { "Fajr": "الفجر", "Sunrise": "الشروق", "Dhuhr": "الظهر", "Asr": "العصر", "Maghrib": "المغرب", "Isha": "العشاء" }; return arabicPrayers[prayerKey] || prayerKey; } }
+
+
+
+
+    function testAdhanPlayback() {
+        if (root.adhanAudioPath && root.adhanPlaybackMode > 0) {
+            playAdhanAudio("Test")
+        }
+    }
+
+    // Add this function to play adhan audio
+    function playAdhanAudio(prayerName) {
+        let audioPath = root.adhanAudioPath
+
+        // If no audio path is available, try to use the default
+        if (!audioPath || audioPath === "") {
+            audioPath = root.defaultAdhanPath
+            console.log("Using default adhan path:", audioPath)
+        }
+
+        if (!audioPath || root.adhanPlaybackMode === 0) {
+            console.log("No audio path available or playback disabled")
+            return
+        }
+
+        let shouldPlay = false;
+        switch(prayerName) {
+            case "Fajr":
+                shouldPlay = root.playAdhanForFajr;
+                break;
+            case "Dhuhr":
+                shouldPlay = root.playAdhanForDhuhr;
+                break;
+            case "Asr":
+                shouldPlay = root.playAdhanForAsr;
+                break;
+            case "Maghrib":
+                shouldPlay = root.playAdhanForMaghrib;
+                break;
+            case "Isha":
+                shouldPlay = root.playAdhanForIsha;
+                break;
+            case "Test":
+                shouldPlay = true;
+                break;
+            default:
+                shouldPlay = false;
+                break;
+        }
+
+        if (!shouldPlay) {
+            console.log("Adhan playback disabled for", prayerName);
             return;
         }
-        var newActivePrayer = "";
-        let now = new Date();
-        const prayerCheckOrder = ["Isha", "Maghrib", "Asr", "Dhuhr", "Sunrise", "Fajr"];
-        let foundActive = false;
+
+        // Stop any currently playing audio
+        if (adhanPlayer.playbackState === MediaPlayer.PlayingState) {
+            adhanPlayer.stop()
+        }
+        adhanStopTimer.stop()
+
+        // Set the audio source - ensure it's a proper URL
+        let sourceUrl = audioPath
+        if (!sourceUrl.startsWith("file://") && !sourceUrl.startsWith("qrc:/")) {
+            sourceUrl = "file://" + sourceUrl
+        }
+
+        console.log("Setting MediaPlayer source to:", sourceUrl)
+        adhanPlayer.source = sourceUrl
+
+        // Volume is already bound on AudioOutput, but we ensure it's current
+        adhanAudioOutput.volume = root.adhanVolume
+
+        // Play the audio
+        adhanPlayer.play()
+
+        // If playback mode is "First 40 seconds only" (mode 2), start the stop timer
+        if (root.adhanPlaybackMode === 2) {
+            adhanStopTimer.interval = 40000  // 40 seconds
+            adhanStopTimer.start()
+        } else if (root.adhanPlaybackMode === 3) {  // Add this condition
+            adhanStopTimer.interval = 17000  // 10 seconds
+            adhanStopTimer.start()
+        }
+
+        console.log("Playing adhan for", prayerName, "from:", sourceUrl, "- Mode:", root.adhanPlaybackMode, "Volume:", root.adhanVolume)
+    }
+
+    function highlightActivePrayer(currentTimingsToUse) {
+        if (!currentTimingsToUse || !currentTimingsToUse.Fajr) {
+            root.activePrayer = ""
+            return
+        }
+
+        var newActivePrayer = ""
+        let now = new Date()
+        const prayerCheckOrder = ["Isha", "Maghrib", "Asr", "Dhuhr", "Sunrise", "Fajr"]
+        let foundActive = false
 
         for (const prayer of prayerCheckOrder) {
-            if (currentTimings[prayer] && currentTimings[prayer] !== "--:--" && now >= parseTime(currentTimings[prayer])) {
-                newActivePrayer = prayer;
-                foundActive = true;
+            if (currentTimingsToUse[prayer] && currentTimingsToUse[prayer] !== "--:--" && now >= parseTime(currentTimingsToUse[prayer])) {
+                newActivePrayer = prayer
+                foundActive = true
+                break
+            }
+        }
+
+        if (!foundActive && currentTimingsToUse["Fajr"] !== "--:--") {
+            newActivePrayer = "Isha"
+        } else if (!foundActive) {
+            newActivePrayer = ""
+        }
+
+        if (root.activePrayer !== newActivePrayer) {
+            root.lastActivePrayer = root.activePrayer
+            root.activePrayer = newActivePrayer
+
+            if (root.lastActivePrayer !== "" && root.activePrayer !== "") {
+                // Send notification if enabled
+                if (Plasmoid.configuration.notifications) {
+                    var notification = notificationComponent.createObject(root)
+                    notification.title = i18n("It's %1 time", getPrayerName(root.languageIndex, root.activePrayer))
+                    notification.sendEvent()
+                }
+
+                // Play adhan audio for valid prayer times (excluding Sunrise)
+                if (root.activePrayer !== "Sunrise") {
+                    playAdhanAudio(root.activePrayer)
+                }
+            }
+        }
+    }
+
+    function getYYYYMMDD(dateObj) { let year = dateObj.getFullYear(); let month = String(dateObj.getMonth() + 1).padStart(2, '0'); let day = String(dateObj.getDate()).padStart(2, '0'); return `${year}-${month}-${day}`; }
+    function getFormattedDate(givenDate) { const day = String(givenDate.getDate()).padStart(2, "0"); const month = String(givenDate.getMonth() + 1).padStart(2, "0"); const year = givenDate.getFullYear(); return `${day}-${month}-${year}`; }
+    function applyOffsetToTime(timeStrHHMM, offsetMins) {
+        if (!timeStrHHMM || timeStrHHMM === "--:--" || typeof offsetMins !== 'number' || offsetMins === 0) { return timeStrHHMM; }
+        let parts = timeStrHHMM.split(':'); let hours = parseInt(parts[0], 10); let minutes = parseInt(parts[1], 10);
+        if (isNaN(hours) || isNaN(minutes)) return timeStrHHMM;
+        let totalMinutes = (hours * 60) + minutes + offsetMins;
+        totalMinutes = ((totalMinutes % 1440) + 1440) % 1440;
+        let finalHours = Math.floor(totalMinutes / 60); let finalMinutes = totalMinutes % 60;
+        return String(finalHours).padStart(2, '0') + ":" + String(finalMinutes).padStart(2, '0');
+    }
+
+    function calculateNextPrayer() {
+        const prayerData = root.displayPrayerTimes;
+        if (!prayerData || !prayerData.Fajr || prayerData.Fajr === "--:--") {
+            root.nextPrayerDateTime = null;
+            root.timeUntilNextPrayer = "";
+            root.nextPrayerNameForDisplay = i18n("N/A"); // Default text
+            root.nextPrayerTimeForDisplay = "";
+            return;
+        }
+
+        const prayerKeys = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
+        const now = new Date();
+        const currentTimeStr = ("0" + now.getHours()).slice(-2) + ":" + ("0" + now.getMinutes()).slice(-2);
+
+        let nextPrayerKey = "";
+        let nextPrayerRawTime = "";
+
+        for (const key of prayerKeys) {
+            if (prayerData[key] && prayerData[key] !== "--:--" && prayerData[key] > currentTimeStr) {
+                nextPrayerKey = key;
+                nextPrayerRawTime = prayerData[key];
                 break;
             }
         }
 
-        if (!foundActive) { // If current time is before today's Fajr
-            newActivePrayer = "Isha"; // Consider previous day's Isha as active
+        if (nextPrayerKey === "" && prayerData["Fajr"] && prayerData["Fajr"] !== "--:--") {
+            nextPrayerKey = "Fajr";
+            nextPrayerRawTime = prayerData["Fajr"];
+        } else if (nextPrayerKey === "") { // No valid prayers found at all
+            root.nextPrayerDateTime = null;
+            root.timeUntilNextPrayer = "";
+            root.nextPrayerNameForDisplay = i18n("N/A");
+            root.nextPrayerTimeForDisplay = "";
+            return;
         }
 
-        if (root.activePrayer !== newActivePrayer) {
-            root.lastActivePrayer = root.activePrayer;
-            root.activePrayer = newActivePrayer;
-            if (root.lastActivePrayer !== "" && root.activePrayer !== "" && Plasmoid.configuration.notifications) {
-                var notification = notificationComponent.createObject(root);
-                notification.title = i18n("It's %1 time", getPrayerName(root.languageIndex, root.activePrayer));
-                notification.sendEvent();
+        // Set the properties needed for display
+        root.nextPrayerNameForDisplay = getPrayerName(root.languageIndex, nextPrayerKey);
+        root.nextPrayerTimeForDisplay = to12HourTime(nextPrayerRawTime, Plasmoid.configuration.hourFormat);
+
+        let nextPrayerDateObj = parseTime(nextPrayerRawTime);
+        if (nextPrayerDateObj) {
+            if (nextPrayerKey === "Fajr" && now > nextPrayerDateObj) {
+                nextPrayerDateObj.setDate(nextPrayerDateObj.getDate() + 1);
             }
+            root.nextPrayerDateTime = nextPrayerDateObj;
+        } else {
+            root.nextPrayerDateTime = null;
         }
-    }
-
-    function getYYYYMMDD(dateObj) {
-        let year = dateObj.getFullYear();
-        let month = String(dateObj.getMonth() + 1).padStart(2, '0');
-        let day = String(dateObj.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-    }
-
-    function getFormattedDate(givenDate) { // Returns DD-MM-YYYY
-        const day = String(givenDate.getDate()).padStart(2, "0");
-        const month = String(givenDate.getMonth() + 1).padStart(2, "0");
-        const year = givenDate.getFullYear();
-        return `${day}-${month}-${year}`;
-    }
-
-    function applyOffsetToTime(timeStrHHMM, offsetMins) {
-        if (!timeStrHHMM || timeStrHHMM === "--:--" || typeof offsetMins !== 'number' || offsetMins === 0) {
-            return timeStrHHMM;
-        }
-        let parts = timeStrHHMM.split(':');
-        let hours = parseInt(parts[0], 10);
-        let minutes = parseInt(parts[1], 10);
-        if (isNaN(hours) || isNaN(minutes)) return timeStrHHMM;
-
-        let totalMinutes = (hours * 60) + minutes + offsetMins;
-        totalMinutes = ((totalMinutes % 1440) + 1440) % 1440; // Keeps time within 0-1439 minutes
-
-        let finalHours = Math.floor(totalMinutes / 60);
-        let finalMinutes = totalMinutes % 60;
-        return String(finalHours).padStart(2, '0') + ":" + String(finalMinutes).padStart(2, '0');
     }
 
     function processRawTimesAndApplyOffsets() {
         const defaultTimesStructure = { Fajr: "--:--", Sunrise: "--:--", Dhuhr: "--:--", Asr: "--:--", Maghrib: "--:--", Isha: "--:--", apiGregorianDate: getFormattedDate(new Date()) };
         if (!root.times || Object.keys(root.times).length === 0 || !root.times.Fajr) {
-            root.displayPrayerTimes = { defaultTimesStructure, apiGregorianDate: (root.times && root.times.apiGregorianDate) || defaultTimesStructure.apiGregorianDate };
-            root.highlightActivePrayer(root.displayPrayerTimes);
-            return;
+            root.displayPrayerTimes = {defaultTimesStructure, apiGregorianDate: (root.times && root.times.apiGregorianDate) || defaultTimesStructure.apiGregorianDate };
+        } else {
+            let newDisplayTimes = {};
+            const prayerKeys = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
+            for (const key of prayerKeys) {
+                let offset = Plasmoid.configuration[key.toLowerCase() + "OffsetMinutes"] || 0;
+                newDisplayTimes[key] = root.times[key] ? applyOffsetToTime(root.times[key], offset) : "--:--";
+            }
+            if (root.times.apiGregorianDate) {
+                newDisplayTimes.apiGregorianDate = root.times.apiGregorianDate;
+            }
+            root.displayPrayerTimes = newDisplayTimes;
         }
-
-        let newDisplayTimes = {};
-        const prayerKeys = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
-        for (const key of prayerKeys) {
-            let offset = Plasmoid.configuration[key.toLowerCase() + "OffsetMinutes"] || 0;
-            newDisplayTimes[key] = root.times[key] ? applyOffsetToTime(root.times[key], offset) : "--:--";
-        }
-        if (root.times.apiGregorianDate) {
-            newDisplayTimes.apiGregorianDate = root.times.apiGregorianDate;
-        } else { // Should always have an apiGregorianDate if root.times is populated
-            newDisplayTimes.apiGregorianDate = getFormattedDate(new Date());
-        }
-        root.displayPrayerTimes = newDisplayTimes;
         root.highlightActivePrayer(root.displayPrayerTimes);
+        // Call the new calculation after prayer times are processed
+        calculateNextPrayer();
     }
 
     function _setProcessedHijriData(hijriDataObject) {
@@ -213,7 +406,6 @@ PlasmoidItem {
         let month = root.currentHijriMonth;
         let message = "";
         if (month === 0 || day === 0) { root.specialIslamicDateMessage = ""; return; }
-
         if (month === 9) { message = (root.languageIndex === 1) ? "شهر رمضان" : "Month of Ramadan"; }
         else if (month === 10 && day === 1) { message = (root.languageIndex === 1) ? "عيد الفطر" : "Eid al-Fitr"; }
         else if (month === 12) {
@@ -224,45 +416,46 @@ PlasmoidItem {
         }
         else if (month === 1 && day === 1) { message = (root.languageIndex === 1) ? "رأس السنة الهجرية" : "Islamic New Year"; }
         else if (month === 1 && day === 10) { message = (root.languageIndex === 1) ? "يوم عاشوراء" : "Day of Ashura"; }
-
-        if (message === "") { // Check for Ayyam al-Bid if no other specific message
-            if (day === 13 || day === 14 || day === 15) {
-                message = (root.languageIndex === 1) ? "الأيام البيض" : "Ayyām al-Bīḍ (The White Days)";
-            }
-        }
+        if (message === "") { if (day === 13 || day === 14 || day === 15) { message = (root.languageIndex === 1) ? "الأيام البيض" : "Ayyām al-Bīḍ (The White Days)"; } }
         root.specialIslamicDateMessage = message;
     }
 
     function fetchTimes() {
-        let todayForAPI = getFormattedDate(new Date()); // DD-MM-YYYY
-        let URL = `https://api.aladhan.com/v1/timingsByCity/${todayForAPI}?city=${encodeURIComponent(Plasmoid.configuration.city || "Makkah")}&country=${encodeURIComponent(Plasmoid.configuration.country || "Saudi Arabia")}&method=${Plasmoid.configuration.method || 4}&school=${Plasmoid.configuration.school || 0}`;
+        let todayForAPI = getFormattedDate(new Date());
+        let URL = "";
+
+        if (root.useCoordinates && root.latitude && root.longitude) {
+            // Use coordinates API endpoint
+            URL = `https://api.aladhan.com/v1/timings/${todayForAPI}?latitude=${encodeURIComponent(root.latitude)}&longitude=${encodeURIComponent(root.longitude)}&method=${Plasmoid.configuration.method || 4}&school=${Plasmoid.configuration.school || 0}`;
+            console.log("Fetching prayer times using coordinates:", root.latitude, root.longitude);
+        } else {
+            // Use city/country API endpoint (fallback or default)
+            URL = `https://api.aladhan.com/v1/timingsByCity/${todayForAPI}?city=${encodeURIComponent(Plasmoid.configuration.city || "Makkah")}&country=${encodeURIComponent(Plasmoid.configuration.country || "Saudi Arabia")}&method=${Plasmoid.configuration.method || 4}&school=${Plasmoid.configuration.school || 0}`;
+            console.log("Fetching prayer times using city/country:", Plasmoid.configuration.city, Plasmoid.configuration.country);
+        }
+
         let xhr = new XMLHttpRequest();
         xhr.onreadystatechange = function() {
             if (xhr.readyState === 4) {
                 if (xhr.status === 200) {
                     let responseData = JSON.parse(xhr.responseText).data;
                     root.times = responseData.timings;
-                    root.times.apiGregorianDate = responseData.date.gregorian.date; // DD-MM-YYYY
+                    root.times.apiGregorianDate = responseData.date.gregorian.date;
                     root.rawHijriDataFromApi = responseData.date.hijri;
-
                     processRawTimesAndApplyOffsets();
-
                     let offset = Plasmoid.configuration.hijriOffset || 0;
                     if (offset !== 0) {
-                        let parts = responseData.date.gregorian.date.split('-'); // DD-MM-YYYY
+                        let parts = responseData.date.gregorian.date.split('-');
                         let originalJsDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
                         originalJsDate.setDate(originalJsDate.getDate() + offset);
-
-                        let adjustedGregorianDateStr = getFormattedDate(originalJsDate); // DD-MM-YYYY
+                        let adjustedGregorianDateStr = getFormattedDate(originalJsDate);
                         let hijriApiURL = `https://api.aladhan.com/v1/gToH?date=${adjustedGregorianDateStr}`;
                         let hijriXhrNested = new XMLHttpRequest();
                         hijriXhrNested.onreadystatechange = function() {
                             if (hijriXhrNested.readyState === 4) {
                                 if (hijriXhrNested.status === 200) {
                                     _setProcessedHijriData(JSON.parse(hijriXhrNested.responseText).data.hijri);
-                                } else {
-                                    _setProcessedHijriData(root.rawHijriDataFromApi); // Fallback
-                                }
+                                } else { _setProcessedHijriData(root.rawHijriDataFromApi); }
                             }
                         };
                         hijriXhrNested.open("GET", hijriApiURL, true);
@@ -270,7 +463,7 @@ PlasmoidItem {
                     } else {
                         _setProcessedHijriData(root.rawHijriDataFromApi);
                     }
-                    updateMonthlyCache(); // Update full month cache
+                    updateMonthlyCache();
                 } else {
                     loadFromLocalStorage();
                 }
@@ -280,36 +473,35 @@ PlasmoidItem {
         xhr.send();
     }
 
-    function saveTodayToLocalStorage() { // Saves raw times and raw hijri
-        if (!root.times || !root.times.Fajr || !root.rawHijriDataFromApi || !root.rawHijriDataFromApi.month) {
-            return;
-        }
+    function saveTodayToLocalStorage() {
+        if (!root.times || !root.times.Fajr || !root.rawHijriDataFromApi) { return; }
         let todayKey = getYYYYMMDD(new Date());
         let cleanTimings = {};
         const prayerKeysToSave = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
-        prayerKeysToSave.forEach(function(pKey) {
-            if (root.times[pKey]) cleanTimings[pKey] = root.times[pKey];
-        });
-
-            if (Object.keys(cleanTimings).length === 0) return;
-
-            let timingsJson = JSON.stringify(cleanTimings);
+        prayerKeysToSave.forEach(function(pKey) { if (root.times[pKey]) cleanTimings[pKey] = root.times[pKey]; });
+        if (Object.keys(cleanTimings).length === 0) return;
+        let timingsJson = JSON.stringify(cleanTimings);
         let hijriJson = JSON.stringify(root.rawHijriDataFromApi);
         var db = getDatabase();
-        db.transaction(function(tx) {
-            try {
-                tx.executeSql('REPLACE INTO PrayerDataCache VALUES(?, ?, ?)', [todayKey, timingsJson, hijriJson]);
-            } catch (err) { /* Silently fail for now, or log minimally */ }
-        });
+        db.transaction(function(tx) { try { tx.executeSql('REPLACE INTO PrayerDataCache VALUES(?, ?, ?)', [todayKey, timingsJson, hijriJson]); } catch (err) {} });
     }
 
     function updateMonthlyCache() {
         let now = new Date();
         let year = now.getFullYear();
         let month = now.getMonth() + 1;
-        if (!Plasmoid.configuration.city || !Plasmoid.configuration.country) return;
 
-        let URL = `https://api.aladhan.com/v1/calendarByCity/${year}/${month}?city=${encodeURIComponent(Plasmoid.configuration.city)}&country=${encodeURIComponent(Plasmoid.configuration.country)}&method=${Plasmoid.configuration.method}&school=${Plasmoid.configuration.school}`;
+        let URL = "";
+
+        if (root.useCoordinates && root.latitude && root.longitude) {
+            // Use coordinates for monthly cache
+            URL = `https://api.aladhan.com/v1/calendar/${year}/${month}?latitude=${encodeURIComponent(root.latitude)}&longitude=${encodeURIComponent(root.longitude)}&method=${Plasmoid.configuration.method || 4}&school=${Plasmoid.configuration.school || 0}`;
+        } else {
+            // Use city/country for monthly cache
+            if (!Plasmoid.configuration.city || !Plasmoid.configuration.country) return;
+            URL = `https://api.aladhan.com/v1/calendarByCity/${year}/${month}?city=${encodeURIComponent(Plasmoid.configuration.city)}&country=${encodeURIComponent(Plasmoid.configuration.country)}&method=${Plasmoid.configuration.method}&school=${Plasmoid.configuration.school}`;
+        }
+
         let xhr = new XMLHttpRequest();
         xhr.onreadystatechange = function() {
             if (xhr.readyState === 4) {
@@ -324,19 +516,13 @@ PlasmoidItem {
                                 let gregorianApiDate = dayData.date.gregorian.date;
                                 let parts = gregorianApiDate.split('-');
                                 if (parts.length !== 3) continue;
-                                let dateKey = `${parts[2]}-${parts[1]}-${parts[0]}`; // YYYY-MM-DD
-
+                                let dateKey = `${parts[2]}-${parts[1]}-${parts[0]}`;
                                 let cleanTimings = {};
                                 const prayerKeysToSave = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
-                                prayerKeysToSave.forEach(function(pKey){
-                                    if(dayData.timings[pKey]) cleanTimings[pKey] = dayData.timings[pKey];
-                                });
-                                    if (Object.keys(cleanTimings).length > 0) {
-                                        try {
-                                            tx.executeSql('REPLACE INTO PrayerDataCache VALUES(?, ?, ?)',
-                                                          [dateKey, JSON.stringify(cleanTimings), JSON.stringify(dayData.date.hijri)]);
-                                        } catch(e) { /* Silently fail for now */ }
-                                    }
+                                prayerKeysToSave.forEach(function(pKey){ if(dayData.timings[pKey]) cleanTimings[pKey] = dayData.timings[pKey]; });
+                                if (Object.keys(cleanTimings).length > 0) {
+                                    try { tx.executeSql('REPLACE INTO PrayerDataCache VALUES(?, ?, ?)', [dateKey, JSON.stringify(cleanTimings), JSON.stringify(dayData.date.hijri)]); } catch(e) {}
+                                }
                             }
                         });
                     }
@@ -360,10 +546,10 @@ PlasmoidItem {
                     root.times.apiGregorianDate = getFormattedDate(new Date());
                     let hijriDataFromCache = JSON.parse(row.hijriJSON);
                     processRawTimesAndApplyOffsets();
-                    _setProcessedHijriData(hijriDataFromCache); // Will call updateSpecialIslamicDateMessage
+                    _setProcessedHijriData(hijriDataFromCache);
                     loaded = true;
                 }
-            } catch (err) { /* Silently fail for now */ }
+            } catch (err) { /* Silently fail */ }
         });
         if (!loaded) {
             root.times = {};
@@ -374,25 +560,65 @@ PlasmoidItem {
     }
 
     Component.onCompleted: {
-        initDatabase();
-        startupTimer.start(); // Use startup timer
+        initDatabase()
+        startupTimer.start()
+
         Plasmoid.configuration.valueChanged.connect(function(key) {
             if (key.endsWith("OffsetMinutes") && (Object.keys(root.times).length > 0 )) {
-                processRawTimesAndApplyOffsets();
+                processRawTimesAndApplyOffsets()
             } else if (key === "languageIndex" || key === "city" || key === "country" ||
-                key === "method" || key === "school" || key === "hijriOffset") {
-                fetchTimes();
+                key === "method" || key === "school" || key === "hijriOffset" ||
+                key === "useCoordinates" || key === "latitude" || key === "longitude") {
+                if (key === "useCoordinates") {
+                    root.useCoordinates = Plasmoid.configuration.useCoordinates || false
+                } else if (key === "latitude") {
+                    root.latitude = Plasmoid.configuration.latitude || ""
+                } else if (key === "longitude") {
+                    root.longitude = Plasmoid.configuration.longitude || ""
                 }
-        });
+                fetchTimes()
+                } else if (key === "adhanAudioPath") {
+                    root.adhanAudioPath = Plasmoid.configuration.adhanAudioPath || ""
+                } else if (key === "adhanPlaybackMode") {
+                    root.adhanPlaybackMode = Plasmoid.configuration.adhanPlaybackMode || 0
+                } else if (key === "adhanVolume") {
+                    root.adhanVolume = Plasmoid.configuration.adhanVolume || 0.7
+                } else if (key.startsWith("playAdhanFor")) {
+                    // Update individual prayer adhan settings
+                    switch(key) {
+                        case "playAdhanForFajr":
+                            root.playAdhanForFajr = Plasmoid.configuration.playAdhanForFajr
+                            break
+                        case "playAdhanForDhuhr":
+                            root.playAdhanForDhuhr = Plasmoid.configuration.playAdhanForDhuhr
+                            break
+                        case "playAdhanForAsr":
+                            root.playAdhanForAsr = Plasmoid.configuration.playAdhanForAsr
+                            break
+                        case "playAdhanForMaghrib":
+                            root.playAdhanForMaghrib = Plasmoid.configuration.playAdhanForMaghrib
+                            break
+                        case "playAdhanFo   rIsha":
+                            root.playAdhanForIsha = Plasmoid.configuration.playAdhanForIsha
+                            break
+                    }
+                }
+        })
     }
 
     // --- REPRESENTATIONS ---
     preferredRepresentation: isSmall ? compactRepresentation : fullRepresentation
     compactRepresentation: CompactRepresentation {
-        prayerTimesData: root.displayPrayerTimes
+        nextPrayerName: root.nextPrayerNameForDisplay
+        nextPrayerTime: root.nextPrayerTimeForDisplay
+        countdownText: root.timeUntilNextPrayer
+        isPrePrayerAlertActive: false // The compact view will calculate its own alert now
+
+        // Pass essential system settings
         plasmoidItem: root
         languageIndex: root.languageIndex
         hourFormat: Plasmoid.configuration.hourFormat
+        compactStyle: Plasmoid.configuration.compactStyle || 0
     }
 
     fullRepresentation: Kirigami.Page {
@@ -408,22 +634,29 @@ PlasmoidItem {
             width: parent.width; padding: Kirigami.Units.largeSpacing; spacing: Kirigami.Units.smallSpacing; anchors.centerIn: parent
             Label { id: arabicPhraseLabel; text: "{صّلِ عَلۓِ مُحَمد ﷺ}"; font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1; font.weight: Font.Bold; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; anchors.horizontalCenter: parent.horizontalCenter; }
             Label { id: hijriDateLabel; text: root.hijriDateDisplay; font.pointSize: Kirigami.Theme.defaultFont.pointSize; font.weight: Font.Bold; opacity: 0.9; anchors.horizontalCenter: parent.horizontalCenter }
+            Label { id: specialDateMessageLabel; text: root.specialIslamicDateMessage; visible: root.specialIslamicDateMessage !== ""; font.pointSize: Kirigami.Theme.smallFont.pointSize; font.italic: true; opacity: 0.85; anchors.horizontalCenter: parent.horizontalCenter; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; }
 
-            Label { // Special Date Message Label
-                id: specialDateMessageLabel
-                text: root.specialIslamicDateMessage
-                visible: root.specialIslamicDateMessage !== ""
+            // NEW Label for the countdown
+            Label {
+                id: countdownLabel
+                text: {
+                    if (!root.timeUntilNextPrayer) return "";
+                    if (root.languageIndex === 1) { // Arabic
+                        return i18n("الوقت المتبقي على الصلاة : %1", root.timeUntilNextPrayer);
+                    } else { // English
+                        return i18n("Time until next prayer: %1", root.timeUntilNextPrayer);
+                    }
+                }
+
+                visible: root.timeUntilNextPrayer !== "" && root.timeUntilNextPrayer !== i18n("Prayer time!")
                 font.pointSize: Kirigami.Theme.smallFont.pointSize
-                font.italic: true
-                opacity: 0.85
+                font.weight: Font.Bold
+                opacity: 0.95
+                color: Kirigami.Theme.textColor
                 anchors.horizontalCenter: parent.horizontalCenter
-                wrapMode: Text.WordWrap
-                horizontalAlignment: Text.AlignHCenter
             }
+            PlasmaComponents.MenuSeparator { width: parent.width; topPadding: Kirigami.Units.moderateSpacing; bottomPadding: Kirigami.Units.smallSpacing }
 
-            PlasmaComponents.MenuSeparator { width: parent.width; topPadding: Kirigami.Units.moderateSpacing; bottomPadding: Kirigami.Units.moderateSpacing }
-
-            // Prayer Rows (using root.displayPrayerTimes)
             Rectangle { width: parent.width; height: Kirigami.Units.gridUnit * 2.0; radius: 8; color: root.activePrayer === 'Fajr' ? Kirigami.Theme.highlightColor : "transparent"; RowLayout { anchors.fill: parent; anchors.leftMargin: Kirigami.Units.largeSpacing; anchors.rightMargin: Kirigami.Units.largeSpacing; Label { text: getPrayerName(root.languageIndex, "Fajr"); color: parent.parent.color === Kirigami.Theme.highlightColor ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor; font.weight: Font.Bold; font.pointSize: Kirigami.Theme.defaultFont.pointSize } Item { Layout.fillWidth: true } Label { text: root.to12HourTime(root.displayPrayerTimes.Fajr, Plasmoid.configuration.hourFormat); color: parent.parent.color === Kirigami.Theme.highlightColor ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor; font.pointSize: Kirigami.Theme.defaultFont.pointSize } } }
             Rectangle { width: parent.width; height: Kirigami.Units.gridUnit * 2.0; radius: 8; color: root.activePrayer === 'Sunrise' ? Kirigami.Theme.highlightColor : "transparent"; RowLayout { anchors.fill: parent; anchors.leftMargin: Kirigami.Units.largeSpacing; anchors.rightMargin: Kirigami.Units.largeSpacing; Label { text: getPrayerName(root.languageIndex, "Sunrise"); color: parent.parent.color === Kirigami.Theme.highlightColor ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor; font.weight: Font.Bold; font.pointSize: Kirigami.Theme.defaultFont.pointSize } Item { Layout.fillWidth: true } Label { text: root.to12HourTime(root.displayPrayerTimes.Sunrise, Plasmoid.configuration.hourFormat); color: parent.parent.color === Kirigami.Theme.highlightColor ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor; font.pointSize: Kirigami.Theme.defaultFont.pointSize } } }
             Rectangle { width: parent.width; height: Kirigami.Units.gridUnit * 2.0; radius: 8; color: root.activePrayer === 'Dhuhr' ? Kirigami.Theme.highlightColor : "transparent"; RowLayout { anchors.fill: parent; anchors.leftMargin: Kirigami.Units.largeSpacing; anchors.rightMargin: Kirigami.Units.largeSpacing; Label { text: getPrayerName(root.languageIndex, "Dhuhr"); color: parent.parent.color === Kirigami.Theme.highlightColor ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor; font.weight: Font.Bold; font.pointSize: Kirigami.Theme.defaultFont.pointSize } Item { Layout.fillWidth: true } Label { text: root.to12HourTime(root.displayPrayerTimes.Dhuhr, Plasmoid.configuration.hourFormat); color: parent.parent.color === Kirigami.Theme.highlightColor ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor; font.pointSize: Kirigami.Theme.defaultFont.pointSize } } }
