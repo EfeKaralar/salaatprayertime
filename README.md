@@ -1,13 +1,15 @@
 # Salaat Prayer Times for KDE Plasma
 
 A simple and customizable widget for KDE Plasma 6 to display daily Islamic prayer times.
-It features Hijri date, special Islamic occasion messages, configurable time offsets, and offline caching.
+It features Hijri date, special Islamic occasion messages, configurable time offsets, adhan sound and offline caching.
 
 Calculations are based on the [AlAdhan API](https://aladhan.com/prayer-times-api).
 
 ![Prayer Times Widget](Prayerwidget.png) 
 
 ![Prayer Times Settings](setting.png)
+
+![Countdownview](CountDownView.png)
 
 ## Key Features
 * Daily prayer times with customizable offsets.
@@ -16,6 +18,9 @@ Calculations are based on the [AlAdhan API](https://aladhan.com/prayer-times-api
 * Offline caching for the current month.
 * English and Arabic language support.
 * 12/24 hour format & prayer notifications.
+* Custom Adhan sound support
+* Time until next prayer countdown
+
 
 ## Installation
 *Just download from kde store or clone this repository.
