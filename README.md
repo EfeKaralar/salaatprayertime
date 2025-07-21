@@ -23,7 +23,7 @@ Calculations are based on the [AlAdhan API](https://aladhan.com/prayer-times-api
 
 
 ## Installation
-*Just download from kde store or clone this repository.
+*Just download from [Kde Store]([https://aladhan.com/prayer-times-api](https://store.kde.org/p/2293509/)). or clone this repository.
 
 ## Configuration
 Right-click the widget and select "Configure..." to set your location, calculation preferences, and display options.
