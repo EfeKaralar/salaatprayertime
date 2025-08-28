@@ -6,7 +6,7 @@ import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.plasmoid
 import org.kde.notification
-import QtQuick.LocalStorage as LocalStorage
+import Qt.labs.settings
 import QtMultimedia
 
 PlasmoidItem {
@@ -69,7 +69,6 @@ PlasmoidItem {
         return audioFileUrl
     }
 
-    // --- NEW Properties for Countdown Timer ---
     property var nextPrayerDateTime: null // Will hold the full Date object for the next prayer
     property string timeUntilNextPrayer: ""   // Will hold the formatted countdown string "HH:MM:SS"
     property string nextPrayerNameForDisplay: ""
@@ -83,6 +82,23 @@ PlasmoidItem {
         repeat: false
         onTriggered: root.fetchTimes()
     }
+
+    Settings {
+        id: cacheSettings
+        category: "PrayerTimesCache"
+
+        property string cacheData: "{}"
+        property real lastCacheUpdate: 0
+    }
+
+    property var cachedData: {
+        try {
+            return JSON.parse(cacheSettings.cacheData || "{}")
+        } catch (e) {
+            return {}
+        }
+    }
+
 
     Timer { // Main 30-second refresh timer
         interval: 30000; running: true; repeat: true;
@@ -165,13 +181,33 @@ PlasmoidItem {
 
 
     // --- Helper Functions ---
-    function getDatabase() { return LocalStorage.LocalStorage.openDatabaseSync("PrayerTimesCacheDB", "1.0", "Prayer Times Offline Cache", 200000); }
-    function initDatabase() { var db = getDatabase(); db.transaction(function(tx) { tx.executeSql('CREATE TABLE IF NOT EXISTS PrayerDataCache(gregorianDate TEXT PRIMARY KEY, timingsJSON TEXT, hijriJSON TEXT)'); console.log("Prayer Times Widget: Database table ensured."); });}
+    function initCache() {
+        console.log("Prayer Times Widget: Cache system initialized with", Object.keys(cachedData).length, "entries.")
+    }
     function to12HourTime(timeString, isActive) { if (!timeString || timeString === "--:--") return timeString; if (isActive) { let parts = timeString.split(':'); let hours = parseInt(parts[0], 10); let minutes = parseInt(parts[1], 10); let period = hours >= 12 ? i18n("PM") : i18n("AM"); hours = hours % 12 || 12; return `${hours}:${String(minutes).padStart(2, '0')} ${period}`; } else { return timeString; } }
     function parseTime(timeString) { if (!timeString || timeString === "--:--") return new Date(0); let parts = timeString.split(':'); let dateObj = new Date(); dateObj.setHours(parseInt(parts[0], 10)); dateObj.setMinutes(parseInt(parts[1], 10)); dateObj.setSeconds(0); dateObj.setMilliseconds(0); return dateObj; }
     function getPrayerName(langIndex, prayerKey) { if (langIndex === 0) { return prayerKey; } else { const arabicPrayers = { "Fajr": "الفجر", "Sunrise": "الشروق", "Dhuhr": "الظهر", "Asr": "العصر", "Maghrib": "المغرب", "Isha": "العشاء" }; return arabicPrayers[prayerKey] || prayerKey; } }
 
+    function saveCacheToSettings() {
+        try {
 
+            let cutoffDate = new Date()
+            cutoffDate.setDate(cutoffDate.getDate() - 10)
+            let cutoffKey = getYYYYMMDD(cutoffDate)
+
+            let cleanedCache = {}
+            for (let key in cachedData) {
+                if (key >= cutoffKey || key === "last_5day_update") {
+                    cleanedCache[key] = cachedData[key]
+                }
+            }
+
+            cacheSettings.cacheData = JSON.stringify(cleanedCache)
+            console.log("Cache saved with", Object.keys(cleanedCache).length, "entries")
+        } catch (error) {
+            console.log("Could not save cache:", error.toString())
+        }
+    }
 
 
     function testAdhanPlayback() {
@@ -463,9 +499,9 @@ PlasmoidItem {
                     } else {
                         _setProcessedHijriData(root.rawHijriDataFromApi);
                     }
-                    updateMonthlyCache();
+                    update5DayCache();
                 } else {
-                    loadFromLocalStorage();
+                    loadFromCache();
                 }
             }
         };
@@ -473,84 +509,129 @@ PlasmoidItem {
         xhr.send();
     }
 
-    function saveTodayToLocalStorage() {
+    function saveTodayToCache() {
         if (!root.times || !root.times.Fajr || !root.rawHijriDataFromApi) { return; }
         let todayKey = getYYYYMMDD(new Date());
         let cleanTimings = {};
         const prayerKeysToSave = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
         prayerKeysToSave.forEach(function(pKey) { if (root.times[pKey]) cleanTimings[pKey] = root.times[pKey]; });
         if (Object.keys(cleanTimings).length === 0) return;
-        let timingsJson = JSON.stringify(cleanTimings);
-        let hijriJson = JSON.stringify(root.rawHijriDataFromApi);
-        var db = getDatabase();
-        db.transaction(function(tx) { try { tx.executeSql('REPLACE INTO PrayerDataCache VALUES(?, ?, ?)', [todayKey, timingsJson, hijriJson]); } catch (err) {} });
+        let updatedCache = cachedData
+        updatedCache[todayKey] = {
+            timings: cleanTimings,
+            hijri: root.rawHijriDataFromApi
+        };
+        cacheSettings.cacheData = JSON.stringify(updatedCache)
     }
 
-    function updateMonthlyCache() {
-        let now = new Date();
-        let year = now.getFullYear();
-        let month = now.getMonth() + 1;
+    function update5DayCache() {
+        const now = new Date();
+        const cacheKey = "last_5day_update";
+        const lastUpdate = Number(cachedData[cacheKey] || 0);
+        const daysSinceUpdate = (now.getTime() - lastUpdate) / (1000 * 60 * 60 * 24);
 
-        let URL = "";
+        if (daysSinceUpdate >= 5 || Object.keys(cachedData).length <= 1) {
+            const year = now.getFullYear();
+            const month = now.getMonth() + 1;
 
-        if (root.useCoordinates && root.latitude && root.longitude) {
-            // Use coordinates for monthly cache
-            URL = `https://api.aladhan.com/v1/calendar/${year}/${month}?latitude=${encodeURIComponent(root.latitude)}&longitude=${encodeURIComponent(root.longitude)}&method=${Plasmoid.configuration.method || 4}&school=${Plasmoid.configuration.school || 0}`;
-        } else {
-            // Use city/country for monthly cache
-            if (!Plasmoid.configuration.city || !Plasmoid.configuration.country) return;
-            URL = `https://api.aladhan.com/v1/calendarByCity/${year}/${month}?city=${encodeURIComponent(Plasmoid.configuration.city)}&country=${encodeURIComponent(Plasmoid.configuration.country)}&method=${Plasmoid.configuration.method}&school=${Plasmoid.configuration.school}`;
-        }
+            // Ensure defaults so we never pass 'undefined' to the API
+            const method = (Plasmoid.configuration.method !== undefined) ? Plasmoid.configuration.method : 4;
+            const school = (Plasmoid.configuration.school !== undefined) ? Plasmoid.configuration.school : 0;
 
-        let xhr = new XMLHttpRequest();
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4) {
-                if (xhr.status === 200) {
-                    let monthlyData = JSON.parse(xhr.responseText).data;
-                    if (monthlyData && monthlyData.length > 0) {
-                        var db = getDatabase();
-                        db.transaction(function(tx) {
-                            for (var i = 0; i < monthlyData.length; i++) {
-                                let dayData = monthlyData[i];
-                                if (!dayData.date || !dayData.date.gregorian || !dayData.date.hijri || !dayData.timings) continue;
-                                let gregorianApiDate = dayData.date.gregorian.date;
-                                let parts = gregorianApiDate.split('-');
-                                if (parts.length !== 3) continue;
-                                let dateKey = `${parts[2]}-${parts[1]}-${parts[0]}`;
-                                let cleanTimings = {};
-                                const prayerKeysToSave = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
-                                prayerKeysToSave.forEach(function(pKey){ if(dayData.timings[pKey]) cleanTimings[pKey] = dayData.timings[pKey]; });
-                                if (Object.keys(cleanTimings).length > 0) {
-                                    try { tx.executeSql('REPLACE INTO PrayerDataCache VALUES(?, ?, ?)', [dateKey, JSON.stringify(cleanTimings), JSON.stringify(dayData.date.hijri)]); } catch(e) {}
+            let URL = "";
+            if (root.useCoordinates && root.latitude && root.longitude) {
+                // Use coordinates for monthly cache
+                URL = `https://api.aladhan.com/v1/calendar/${year}/${month}` +
+                `?latitude=${encodeURIComponent(root.latitude)}` +
+                `&longitude=${encodeURIComponent(root.longitude)}` +
+                `&method=${method}&school=${school}`;
+            } else {
+                // Use city/country for monthly cache
+                if (!Plasmoid.configuration.city || !Plasmoid.configuration.country) {
+                    // we still save today's data below
+                    saveTodayToCache();
+                    return;
+                }
+                URL = `https://api.aladhan.com/v1/calendarByCity/${year}/${month}` +
+                `?city=${encodeURIComponent(Plasmoid.configuration.city)}` +
+                `&country=${encodeURIComponent(Plasmoid.configuration.country)}` +
+                `&method=${method}&school=${school}`;
+            }
+
+            const xhr = new XMLHttpRequest();
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === 4) {
+                    if (xhr.status === 200) {
+                        try {
+                            const monthlyData = JSON.parse(xhr.responseText).data;
+                            if (monthlyData && monthlyData.length > 0) {
+                                // clone to avoid mutating the binding object in place
+                                const updatedCache = Object.assign({}, cachedData);
+
+                                for (let i = 0; i < monthlyData.length; i++) {
+                                    const dayData = monthlyData[i];
+                                    if (!dayData || !dayData.date || !dayData.date.gregorian ||
+                                        !dayData.date.hijri || !dayData.timings) continue;
+
+                                    const gregorianApiDate = dayData.date.gregorian.date; // "DD-MM-YYYY"
+                                    const parts = gregorianApiDate.split('-');
+                                    if (parts.length !== 3) continue;
+
+                                    const dateKey = `${parts[2]}-${parts[1]}-${parts[0]}`; // "YYYY-MM-DD"
+
+                                    const cleanTimings = {};
+                                    const prayerKeysToSave = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
+                                    for (const pKey of prayerKeysToSave) {
+                                        if (dayData.timings[pKey]) cleanTimings[pKey] = dayData.timings[pKey];
+                                    }
+
+                                    if (Object.keys(cleanTimings).length > 0) {
+                                        updatedCache[dateKey] = {
+                                            timings: cleanTimings,
+                                            hijri: dayData.date.hijri
+                                        };
+                                    }
                                 }
+                                // Record the update moment inside the cache object so the next run sees it
+                                updatedCache[cacheKey] = now.getTime();
+                                cacheSettings.cacheData = JSON.stringify(updatedCache);
+                                cacheSettings.lastCacheUpdate = now.getTime();
                             }
-                        });
+                        } catch (e) {
+                            console.log("Monthly cache parse error:", e.toString());
+                        }
+                    } else {
+                        console.log("Monthly cache request failed with status:", xhr.status);
                     }
                 }
-            }
-        };
-        xhr.open("GET", URL, true);
-        xhr.send();
+            };
+            xhr.open("GET", URL, true);
+            xhr.send();
+        }
+
+        saveTodayToCache();
     }
 
-    function loadFromLocalStorage() {
-        let todayKey = getYYYYMMDD(new Date());
-        var db = getDatabase();
-        var loaded = false;
-        db.readTransaction(function(tx) {
+    function loadFromCache() {
+        const todayKey = getYYYYMMDD(new Date());
+        let loaded = false;
+
+        if (cachedData[todayKey]) {
             try {
-                var rs = tx.executeSql('SELECT timingsJSON, hijriJSON FROM PrayerDataCache WHERE gregorianDate = ?', [todayKey]);
-                if (rs.rows.length > 0) {
-                    let row = rs.rows.item(0);
-                    root.times = JSON.parse(row.timingsJSON);
-                    root.times.apiGregorianDate = getFormattedDate(new Date());
-                    let hijriDataFromCache = JSON.parse(row.hijriJSON);
-                    processRawTimesAndApplyOffsets();
-                    _setProcessedHijriData(hijriDataFromCache);
-                    loaded = true;
-                }
-            } catch (err) { /* Silently fail */ }
-        });
+                const cachedEntry = cachedData[todayKey];
+                root.times = cachedEntry.timings;
+                root.times.apiGregorianDate = getFormattedDate(new Date());
+                const hijriDataFromCache = cachedEntry.hijri;
+
+                processRawTimesAndApplyOffsets();
+                _setProcessedHijriData(hijriDataFromCache);
+
+                loaded = true;
+            } catch (err) {
+                console.log("Error loading from cache:", err.toString());
+            }
+        }
+
         if (!loaded) {
             root.times = {};
             processRawTimesAndApplyOffsets();
@@ -560,7 +641,7 @@ PlasmoidItem {
     }
 
     Component.onCompleted: {
-        initDatabase()
+        initCache()
         startupTimer.start()
 
         Plasmoid.configuration.valueChanged.connect(function(key) {
